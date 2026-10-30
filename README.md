@@ -1,4 +1,6 @@
-# PR Helper
+# LazyDev PR Helper
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20Me-F16061?logo=ko-fi&logoColor=white)](https://ko-fi.com/goranlegenda)
 
 Cursor/VS Code extension that lists open GitHub pull requests, shows CI status and comments, and runs AI reviews with optional Jira context.
 

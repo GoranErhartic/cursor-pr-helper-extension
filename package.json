@@ -1,9 +1,9 @@
 {
-  "name": "cursor-pr-helper",
-  "displayName": "PR Helper",
+  "name": "lazydev-pr-helper",
+  "displayName": "LazyDev PR Helper",
   "description": "List open PRs, view CI and comments, and run AI reviews with Jira context.",
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "LazyDevAI",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -18,13 +18,14 @@
   "activationEvents": [
     "onView:prHelper.prs"
   ],
+  "icon": "image/icon.png",
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
           "id": "prHelper",
-          "title": "PR Helper",
+          "title": "LazyDev PR Helper",
           "icon": "media/icon.svg"
         }
       ]
