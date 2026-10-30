@@ -1,14 +1,24 @@
 import * as vscode from 'vscode';
 import type { GitHubClient, PullRequestSummary, RepoRef } from '../github/GitHubClient';
-import { ciStatusIcon } from '../util/vscodeHelpers';
-import { pickPrimaryJiraKey, parseProjectKeys } from '../util/jiraKey';
 
 export type TreeItemKind =
+  | 'group'
   | 'prRoot'
   | 'prMeta'
   | 'prActionRun'
   | 'loading'
   | 'error';
+
+/** Red: needs rebase / cannot merge. Green: approved. Yellow: waiting on review. */
+function prIcon(pr: PullRequestSummary): vscode.ThemeIcon {
+  let color = 'charts.yellow';
+  if (pr.needsRebase) {
+    color = 'charts.red';
+  } else if (pr.reviewStatus === 'approved') {
+    color = 'charts.green';
+  }
+  return new vscode.ThemeIcon('git-pull-request', new vscode.ThemeColor(color));
+}
 
 export class PrTreeItem extends vscode.TreeItem {
   constructor(
@@ -16,19 +26,28 @@ export class PrTreeItem extends vscode.TreeItem {
     label: string,
     collapsibleState: vscode.TreeItemCollapsibleState,
     public readonly prNumber?: number,
-    public readonly summary?: PullRequestSummary
+    public readonly summary?: PullRequestSummary,
+    public readonly groupDraft?: boolean
   ) {
     super(label, collapsibleState);
+    if (kind === 'group') {
+      this.contextValue = 'prGroup';
+      this.iconPath = new vscode.ThemeIcon(groupDraft ? 'edit' : 'eye');
+    }
     if (kind === 'prRoot' && summary) {
-      this.description = `#${summary.number} ${summary.draft ? '(draft)' : ''} ${ciStatusIcon(summary.ciState)}`;
+      this.description = `@${summary.author}`;
       this.tooltip = `${summary.title}\n${summary.headRef} → ${summary.baseRef}`;
       this.contextValue = 'prRoot';
-      this.iconPath = new vscode.ThemeIcon('git-pull-request');
+      this.iconPath = prIcon(summary);
+      this.label = `\u2002${label}`;
       this.command = {
         command: 'prHelper.openPr',
         title: 'Open PR Details',
         arguments: [summary.number],
       };
+    }
+    if (kind === 'loading') {
+      this.iconPath = new vscode.ThemeIcon('loading~spin');
     }
     if (kind === 'prActionRun') {
       this.contextValue = 'prActionRun';
@@ -75,7 +94,10 @@ export class PrTreeProvider implements vscode.TreeDataProvider<PrTreeItem> {
     this.loadError = undefined;
     this._onDidChangeTreeData.fire(undefined);
     try {
-      this.prs = await this.github.listOpenPullRequests(ref);
+      this.prs = await vscode.window.withProgress(
+        { location: { viewId: 'prHelper.prs' } },
+        () => this.github.listOpenPullRequests(ref)
+      );
     } catch (err) {
       this.loadError = err instanceof Error ? err.message : String(err);
       this.prs = [];
@@ -106,85 +128,51 @@ export class PrTreeProvider implements vscode.TreeDataProvider<PrTreeItem> {
           new PrTreeItem('prMeta', 'No open pull requests', vscode.TreeItemCollapsibleState.None),
         ]);
       }
-      return Promise.resolve(
-        this.prs.map(
-          (pr) =>
-            new PrTreeItem(
-              'prRoot',
-              pr.title,
-              vscode.TreeItemCollapsibleState.Collapsed,
-              pr.number,
-              pr
-            )
-        )
-      );
+      const groups: PrTreeItem[] = [];
+      const ready = this.prs.filter((p) => !p.draft).length;
+      const drafts = this.prs.length - ready;
+      if (ready > 0) {
+        groups.push(
+          new PrTreeItem(
+            'group',
+            `Ready for review (${ready})`,
+            vscode.TreeItemCollapsibleState.Expanded,
+            undefined,
+            undefined,
+            false
+          )
+        );
+      }
+      if (drafts > 0) {
+        groups.push(
+          new PrTreeItem(
+            'group',
+            `Draft (${drafts})`,
+            vscode.TreeItemCollapsibleState.Expanded,
+            undefined,
+            undefined,
+            true
+          )
+        );
+      }
+      return Promise.resolve(groups);
     }
 
-    if (element.kind === 'prRoot' && element.summary) {
-      const pr = element.summary;
-      const config = vscode.workspace.getConfiguration('prHelper');
-      const projectKeys = parseProjectKeys(config.get<string>('jiraProjectKeys') ?? '');
-      const jiraKey = pickPrimaryJiraKey(pr.headRef, pr.title, projectKeys);
-      const children: PrTreeItem[] = [
-        new PrTreeItem(
-          'prMeta',
-          `CI: ${pr.ciState ?? 'unknown'} ${ciStatusIcon(pr.ciState)}`,
-          vscode.TreeItemCollapsibleState.None,
-          pr.number,
-          pr
-        ),
-        new PrTreeItem(
-          'prMeta',
-          `Author: @${pr.author}`,
-          vscode.TreeItemCollapsibleState.None,
-          pr.number,
-          pr
-        ),
-        new PrTreeItem(
-          'prMeta',
-          `Branch: ${pr.headRef} → ${pr.baseRef}`,
-          vscode.TreeItemCollapsibleState.None,
-          pr.number,
-          pr
-        ),
-      ];
-      if (pr.labels.length) {
-        children.push(
-          new PrTreeItem(
-            'prMeta',
-            `Labels: ${pr.labels.join(', ')}`,
-            vscode.TreeItemCollapsibleState.None,
-            pr.number,
-            pr
+    if (element.kind === 'group') {
+      return Promise.resolve(
+        this.prs
+          .filter((pr) => pr.draft === element.groupDraft)
+          .map(
+            (pr) =>
+              new PrTreeItem(
+                'prRoot',
+                pr.title,
+                vscode.TreeItemCollapsibleState.None,
+                pr.number,
+                pr
+              )
           )
-        );
-      }
-      if (pr.reviewers.length) {
-        children.push(
-          new PrTreeItem(
-            'prMeta',
-            `Reviewers: ${pr.reviewers.join(', ')}`,
-            vscode.TreeItemCollapsibleState.None,
-            pr.number,
-            pr
-          )
-        );
-      }
-      if (jiraKey) {
-        children.push(
-          new PrTreeItem(
-            'prMeta',
-            `Jira: ${jiraKey}`,
-            vscode.TreeItemCollapsibleState.None,
-            pr.number,
-            pr
-          )
-        );
-      }
-      children.push(
-        new PrTreeItem('prActionRun', 'Run PR (AI review)', vscode.TreeItemCollapsibleState.None, pr.number, pr)
       );
-      return Promise.resolve(children);
     }
 
     return Promise.resolve([]);

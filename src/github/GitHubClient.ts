@@ -19,6 +19,10 @@ export interface PullRequestSummary {
   labels: string[];
   reviewers: string[];
   ciState?: 'success' | 'failure' | 'pending' | 'unknown';
+  /** 'approved' | 'changes_requested' | 'pending' (waiting on review) */
+  reviewStatus?: 'approved' | 'changes_requested' | 'pending';
+  /** True when the branch conflicts with / is behind base and cannot merge cleanly. */
+  needsRebase?: boolean;
 }
 
 export interface CheckRunInfo {
@@ -72,10 +76,14 @@ export class GitHubClient {
       per_page: 50,
     });
 
-    const summaries: PullRequestSummary[] = [];
-    for (const pr of prs) {
-      const ciState = await this.getCombinedCiState(ref, pr.head.sha);
-      summaries.push({
+    return Promise.all(
+      prs.map(async (pr): Promise<PullRequestSummary> => {
+      const [ciState, reviewStatus, needsRebase] = await Promise.all([
+        this.getCombinedCiState(ref, pr.head.sha),
+        this.getReviewStatus(ref, pr.number),
+        this.getNeedsRebase(ref, pr.number),
+      ]);
+      return {
         number: pr.number,
         title: pr.title,
         author: pr.user?.login ?? 'unknown',
@@ -88,9 +96,47 @@ export class GitHubClient {
         labels: (pr.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name ?? '')).filter(Boolean),
         reviewers: (pr.requested_reviewers ?? []).map((r) => r.login ?? '').filter(Boolean),
         ciState,
-      });
+        reviewStatus,
+        needsRebase,
+      };
+      })
+    );
+  }
+
+  private async getReviewStatus(ref: RepoRef, number: number): Promise<'approved' | 'changes_requested' | 'pending'> {
+    try {
+      const reviews = await this.listReviews(ref, number);
+      const latest = new Map<string, string>();
+      for (const r of reviews) {
+        if (r.state === 'APPROVED' || r.state === 'CHANGES_REQUESTED' || r.state === 'DISMISSED') {
+          latest.set(r.author, r.state);
+        }
+      }
+      const states = [...latest.values()];
+      if (states.includes('CHANGES_REQUESTED')) {
+        return 'changes_requested';
+      }
+      return states.includes('APPROVED') ? 'approved' : 'pending';
+    } catch {
+      return 'pending';
     }
-    return summaries;
+  }
+
+  private async getNeedsRebase(ref: RepoRef, number: number): Promise<boolean> {
+    try {
+      const octokit = await this.ensureAuth();
+      // mergeable is computed lazily; retry briefly while null.
+      for (let i = 0; i < 3; i++) {
+        const { data } = await octokit.pulls.get({ owner: ref.owner, repo: ref.repo, pull_number: number });
+        if (data.mergeable !== null && data.mergeable !== undefined) {
+          return data.mergeable === false || data.mergeable_state === 'dirty';
+        }
+        await new Promise((r) => setTimeout(r, 700));
+      }
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   async getCombinedCiState(ref: RepoRef, sha: string): Promise<PullRequestSummary['ciState']> {

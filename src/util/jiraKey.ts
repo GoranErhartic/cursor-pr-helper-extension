@@ -26,10 +26,24 @@ export function extractJiraKeys(text: string, projectKeys: string[]): string[] {
 }
 
 export function pickPrimaryJiraKey(branch: string, title: string, projectKeys: string[]): string | undefined {
-  const fromBranch = extractJiraKeys(branch, projectKeys);
-  if (fromBranch.length > 0) {
-    return fromBranch[0];
+  return pickPrimaryJiraKeyFromTexts([branch, title], projectKeys);
+}
+
+export function pickPrimaryJiraKeyFromTexts(texts: string[], projectKeys: string[]): string | undefined {
+  for (const text of texts) {
+    const scoped = extractJiraKeys(text, projectKeys);
+    if (scoped.length > 0) {
+      return scoped[0];
+    }
   }
-  const fromTitle = extractJiraKeys(title, projectKeys);
-  return fromTitle[0];
+  // If project keys were configured but no match was found, fall back to generic key extraction.
+  if (projectKeys.length > 0) {
+    for (const text of texts) {
+      const fallback = extractJiraKeys(text, []);
+      if (fallback.length > 0) {
+        return fallback[0];
+      }
+    }
+  }
+  return undefined;
 }

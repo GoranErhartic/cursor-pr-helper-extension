@@ -6,7 +6,7 @@ import { ReviewPanel } from '../review/ReviewPanel';
 import { getProvider } from '../llm/registry';
 import { configureProvider, ensureLlmSetup, type SetupContext } from '../commands/providerCommands';
 import { isAbortError, ProviderError } from '../llm/errors';
-import { pickPrimaryJiraKey, parseProjectKeys } from '../util/jiraKey';
+import { parseProjectKeys, pickPrimaryJiraKeyFromTexts } from '../util/jiraKey';
 
 export async function runPrReview(
   context: vscode.ExtensionContext,
@@ -23,49 +23,55 @@ export async function runPrReview(
   const provider = getProvider(creds.providerId);
   await promptForJiraAuthorization(jira);
 
-  const controller = new AbortController();
-  const cancel = vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.Notification,
-      title: `Running AI review for PR #${prNumber}`,
-      cancellable: true,
-    },
-    async (progress, token) => {
-      token.onCancellationRequested(() => controller.abort());
-      const detail = await github.getPullRequestDetail(ref, prNumber);
-      const diff = await github.getPullRequestDiff(ref, prNumber);
-      const config = vscode.workspace.getConfiguration('prHelper');
-      const projectKeys = parseProjectKeys(config.get<string>('jiraProjectKeys') ?? '');
-      const jiraKey = pickPrimaryJiraKey(detail.headRef, detail.title, projectKeys);
-      let jiraContext;
-      if (jiraKey && (await jira.isConnected())) {
-        jiraContext = await jira.getIssue(jiraKey);
-      }
-      const prompt = buildReviewPrompt({
-        pr: detail,
-        diff,
-        jira: jiraContext,
-        repoFullName: `${ref.owner}/${ref.repo}`,
-      });
-      const panel = ReviewPanel.show(context.extensionUri, `Review PR #${prNumber}`);
-      await provider.review(
-        creds.apiKey,
-        creds.model,
-        prompt,
-        (chunk) => panel.appendMarkdown(chunk),
-        controller.signal,
-        (status) => progress.report({ message: status })
-      );
-      panel.setComplete();
-    }
-  );
+  const panel = ReviewPanel.show(context.extensionUri, `Review PR #${prNumber}`);
   try {
-    await cancel;
+    panel.setStatus('Fetching PR metadata and comments from GitHub…');
+    const detail = await github.getPullRequestDetail(ref, prNumber);
+
+    panel.setStatus('Fetching pull request diff…');
+    const diff = await github.getPullRequestDiff(ref, prNumber);
+
+    const config = vscode.workspace.getConfiguration('prHelper');
+    const projectKeys = parseProjectKeys(config.get<string>('jiraProjectKeys') ?? '');
+    const jiraKey = pickPrimaryJiraKeyFromTexts([detail.headRef, detail.title, detail.body], projectKeys);
+    let jiraContext;
+    if (!jiraKey) {
+      panel.setStatus('No Jira issue key found in branch, title, or PR body. Continuing with GitHub context only…');
+    } else if (!(await jira.isConnected())) {
+      panel.setStatus(`Jira key ${jiraKey} found, but Jira is not connected. Continuing with GitHub context only…`);
+    } else {
+      panel.setStatus(`Fetching Jira issue ${jiraKey}…`);
+      jiraContext = await jira.getIssue(jiraKey);
+      if (!jiraContext) {
+        panel.setStatus(`Jira context unavailable for ${jiraKey}. Continuing with GitHub context only…`);
+      }
+    }
+
+    panel.setStatus('Building review prompt…');
+    const prompt = buildReviewPrompt({
+      pr: detail,
+      diff,
+      jira: jiraContext,
+      repoFullName: `${ref.owner}/${ref.repo}`,
+    });
+
+    panel.setStatus(`Starting ${provider.label} review…`);
+    await provider.review(
+      creds.apiKey,
+      creds.model,
+      prompt,
+      (chunk) => panel.appendMarkdown(chunk),
+      undefined,
+      (status) => panel.setStatus(status)
+    );
+    panel.setComplete();
   } catch (err) {
     if (isAbortError(err)) {
+      panel.setStatus('Review canceled.');
       return;
     }
     if (err instanceof ProviderError && err.code === 'invalid_key') {
+      panel.setStatus('Review failed: invalid API key.');
       const choice = await vscode.window.showErrorMessage(`PR Helper: ${err.message}`, 'Reconfigure');
       if (choice === 'Reconfigure') {
         await configureProvider(setup);
@@ -73,6 +79,7 @@ export async function runPrReview(
       return;
     }
     const msg = err instanceof Error ? err.message : String(err);
+    panel.setStatus(`Review failed: ${msg}`);
     vscode.window.showErrorMessage(`Run PR failed: ${msg}`);
   }
 }

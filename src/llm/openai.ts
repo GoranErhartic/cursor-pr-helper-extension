@@ -37,8 +37,10 @@ export class OpenAiProvider implements LlmProvider {
     model: string,
     input: ReviewInput,
     onChunk: (text: string) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onStatus?: (status: string) => void
   ): Promise<void> {
+    onStatus?.('Connecting to OpenAI…');
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -61,6 +63,8 @@ export class OpenAiProvider implements LlmProvider {
     if (!res.body) {
       throw new ProviderError('OpenAI returned an empty response body.', 'api');
     }
+    onStatus?.('OpenAI accepted the request. Waiting for first tokens…');
+    let receivedFirstToken = false;
     await readSseStream(res.body, (line) => {
       if (!line.startsWith('data: ')) {
         return;
@@ -75,6 +79,10 @@ export class OpenAiProvider implements LlmProvider {
         };
         const delta = parsed.choices?.[0]?.delta?.content;
         if (delta) {
+          if (!receivedFirstToken) {
+            receivedFirstToken = true;
+            onStatus?.('Streaming review output…');
+          }
           onChunk(delta);
         }
       } catch {

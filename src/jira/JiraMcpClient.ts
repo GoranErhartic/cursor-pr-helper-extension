@@ -38,10 +38,24 @@ export class JiraMcpClient {
   constructor(private readonly secrets: vscode.SecretStorage) {}
 
   async isConnected(): Promise<boolean> {
-    if (await hasOAuthTokens(this.secrets)) {
-      return true;
+    const hasOAuth = await hasOAuthTokens(this.secrets);
+    const hasBearer = Boolean(await this.secrets.get(ACCESS_TOKEN_KEY));
+    if (!hasOAuth && !hasBearer) {
+      return false;
     }
-    return Boolean(await this.secrets.get(ACCESS_TOKEN_KEY));
+    try {
+      await this.verifyConnection();
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof UnauthorizedError || isLikelyAuthError(msg)) {
+        await this.disconnect();
+      } else {
+        this.resetConnection();
+      }
+      logPrHelper(`Jira connectivity check failed: ${msg}`);
+      return false;
+    }
   }
 
   async disconnect(): Promise<void> {

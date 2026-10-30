@@ -34,8 +34,10 @@ export class AnthropicProvider implements LlmProvider {
     model: string,
     input: ReviewInput,
     onChunk: (text: string) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onStatus?: (status: string) => void
   ): Promise<void> {
+    onStatus?.('Connecting to Anthropic…');
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -58,10 +60,12 @@ export class AnthropicProvider implements LlmProvider {
     if (!res.body) {
       throw new ProviderError('Anthropic returned an empty response body.', 'api');
     }
+    onStatus?.('Anthropic accepted the request. Waiting for first tokens…');
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let reading = true;
+    let receivedFirstToken = false;
     try {
       while (reading) {
         if (signal?.aborted) {
@@ -86,6 +90,10 @@ export class AnthropicProvider implements LlmProvider {
               delta?: { type?: string; text?: string };
             };
             if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+              if (!receivedFirstToken) {
+                receivedFirstToken = true;
+                onStatus?.('Streaming review output…');
+              }
               onChunk(parsed.delta.text);
             }
           } catch {

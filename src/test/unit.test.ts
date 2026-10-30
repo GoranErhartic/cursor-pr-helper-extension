@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { extractJiraKeys, pickPrimaryJiraKey, parseProjectKeys } from '../util/jiraKey';
+import { extractJiraKeys, pickPrimaryJiraKey, parseProjectKeys, pickPrimaryJiraKeyFromTexts } from '../util/jiraKey';
 import { buildReviewPrompt } from '../review/buildPrompt';
 import type { PullRequestDetail } from '../github/GitHubClient';
 
@@ -16,6 +16,14 @@ describe('jiraKey', () => {
 
   it('parseProjectKeys splits config', () => {
     assert.deepStrictEqual(parseProjectKeys(' art, RE '), ['ART', 'RE']);
+  });
+
+  it('pickPrimaryJiraKeyFromTexts checks body and falls back when project filter misses', () => {
+    const key = pickPrimaryJiraKeyFromTexts(
+      ['feature/no-ticket', 'Improve parser', 'Implements ABC-123 acceptance criteria'],
+      ['ART', 'RE']
+    );
+    assert.strictEqual(key, 'ABC-123');
   });
 });
 
