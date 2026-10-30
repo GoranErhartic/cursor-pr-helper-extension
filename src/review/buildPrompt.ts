@@ -4,6 +4,9 @@ import type { JiraIssueContext } from '../jira/JiraMcpClient';
 const MAX_DIFF_CHARS = 120_000;
 const MAX_FILE_SNIPPET = 8_000;
 
+/**
+ * The context for the prompt.
+ */
 export interface PromptContext {
   pr: PullRequestDetail;
   diff: string;
