@@ -53,4 +53,21 @@ describe('buildReviewPrompt', () => {
     assert.ok(userPrompt.includes('# Pull request #1'));
     assert.ok(userPrompt.includes('+line'));
   });
+
+  it('system prompt covers the stack checklists and output contract', () => {
+    const { systemPrompt } = buildReviewPrompt({ pr, diff: '+line', repoFullName: 'o/r' });
+    for (const section of [
+      '# TypeScript (all code)',
+      '# Backend (AWS Lambda)',
+      '# Frontend (Vue 3)',
+      '# CDK / infra wiring compliance',
+      '# CDK quality',
+      '# Severity rubric',
+      '- Verdict:',
+      '- **Confidence:**',
+      '### Not reviewed / blind spots',
+    ]) {
+      assert.ok(systemPrompt.includes(section), `missing: ${section}`);
+    }
+  });
 });
