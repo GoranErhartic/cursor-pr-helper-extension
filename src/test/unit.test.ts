@@ -1,0 +1,56 @@
+import assert from 'node:assert';
+import { extractJiraKeys, pickPrimaryJiraKey, parseProjectKeys } from '../util/jiraKey';
+import { buildReviewPrompt } from '../review/buildPrompt';
+import type { PullRequestDetail } from '../github/GitHubClient';
+
+describe('jiraKey', () => {
+  it('extracts keys from branch and title', () => {
+    assert.deepStrictEqual(extractJiraKeys('feat/ART-722/foo', []), ['ART-722']);
+    assert.deepStrictEqual(extractJiraKeys('fix something RE-99', ['RE']), ['RE-99']);
+  });
+
+  it('pickPrimaryJiraKey prefers branch', () => {
+    const key = pickPrimaryJiraKey('feat/ART-1/x', 'RE-2 title', []);
+    assert.strictEqual(key, 'ART-1');
+  });
+
+  it('parseProjectKeys splits config', () => {
+    assert.deepStrictEqual(parseProjectKeys(' art, RE '), ['ART', 'RE']);
+  });
+});
+
+describe('buildReviewPrompt', () => {
+  const pr: PullRequestDetail = {
+    number: 1,
+    title: 'Test',
+    author: 'dev',
+    draft: false,
+    htmlUrl: 'https://github.com/o/r/pull/1',
+    headRef: 'feature',
+    baseRef: 'main',
+    createdAt: '',
+    updatedAt: '',
+    labels: [],
+    reviewers: [],
+    body: 'body',
+    mergeableState: 'clean',
+    additions: 1,
+    deletions: 0,
+    changedFiles: 1,
+    checks: [],
+    issueComments: [],
+    reviewComments: [],
+    reviews: [],
+  };
+
+  it('includes diff and metadata', () => {
+    const { userPrompt, systemPrompt } = buildReviewPrompt({
+      pr,
+      diff: '+line',
+      repoFullName: 'o/r',
+    });
+    assert.ok(systemPrompt.includes('pull request review'));
+    assert.ok(userPrompt.includes('# Pull request #1'));
+    assert.ok(userPrompt.includes('+line'));
+  });
+});

@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+  "@vscode/vsce-sign": true
+overrides:
+  '@azure/msal-node': ^7.1.0
+  serialize-javascript: ^7.1.3

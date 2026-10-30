@@ -1,0 +1,165 @@
+{
+  "name": "cursor-pr-helper",
+  "displayName": "PR Helper",
+  "description": "List open PRs, view CI and comments, and run AI reviews with Jira context.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GoranErhartic/cursor-pr-helper-extension.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:prHelper.prs"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "prHelper",
+          "title": "PR Helper",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "prHelper": [
+        {
+          "id": "prHelper.prs",
+          "name": "Pull Requests"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "prHelper.refresh",
+        "title": "Refresh PRs",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "prHelper.configureProvider",
+        "title": "PR Helper: Configure Provider"
+      },
+      {
+        "command": "prHelper.selectModel",
+        "title": "PR Helper: Select Model"
+      },
+      {
+        "command": "prHelper.clearKey",
+        "title": "PR Helper: Clear Stored API Key"
+      },
+      {
+        "command": "prHelper.connectJira",
+        "title": "PR Helper: Connect Jira"
+      },
+      {
+        "command": "prHelper.runPr",
+        "title": "Run PR",
+        "icon": "$(play)"
+      },
+      {
+        "command": "prHelper.openPr",
+        "title": "Open PR Details"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "prHelper.refresh",
+          "when": "view == prHelper.prs",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "prHelper.runPr",
+          "when": "view == prHelper.prs && viewItem == prActionRun",
+          "group": "inline"
+        },
+        {
+          "command": "prHelper.openPr",
+          "when": "view == prHelper.prs && viewItem == prRoot",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "PR Helper",
+      "properties": {
+        "prHelper.provider": {
+          "type": "string",
+          "enum": [
+            "openai",
+            "anthropic",
+            "cursor"
+          ],
+          "default": "openai",
+          "description": "LLM provider for Run PR reviews."
+        },
+        "prHelper.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model ID to use (set via Select Model after validating your API key)."
+        },
+        "prHelper.jiraMcpUrl": {
+          "type": "string",
+          "default": "https://mcp.atlassian.com/v1/sse",
+          "description": "Atlassian remote MCP endpoint URL."
+        },
+        "prHelper.jiraProjectKeys": {
+          "type": "string",
+          "default": "",
+          "description": "Optional comma-separated Jira project keys to narrow issue key detection (e.g. ART,RE)."
+        },
+        "prHelper.refreshIntervalMinutes": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Auto-refresh open PRs every N minutes (0 = disabled)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "pnpm run check-types && node esbuild.mjs",
+    "check-types": "tsc --noEmit",
+    "watch": "pnpm run --parallel \"/^watch:.*/\"",
+    "watch:esbuild": "node esbuild.mjs --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "build:prod": "pnpm run check-types && node esbuild.mjs --production",
+    "package": "vsce package --no-dependencies",
+    "vscode:prepublish": "pnpm run build:prod",
+    "lint": "eslint src --ext ts",
+    "test": "pnpm run test:unit",
+    "test:unit": "mocha --require ts-node/register 'src/test/**/*.test.ts'"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/test-electron": "^2.3.9",
+    "@vscode/vsce": "^4.1.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^8.56.0",
+    "glob": "^10.3.10",
+    "mocha": "^10.2.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.2.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@octokit/rest": "^20.0.2",
+    "marked": "^12.0.0"
+  },
+  "packageManager": "pnpm@12.4.1"
+}
