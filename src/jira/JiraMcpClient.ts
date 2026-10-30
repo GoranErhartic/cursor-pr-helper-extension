@@ -1,147 +1,287 @@
 import * as vscode from 'vscode';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import {
+  assertMcpToolSuccess,
+  buildIssueContext,
+  describeResourcesResponse,
+  isLikelyAuthError,
+  issueContextLooksEmpty,
+  parseAccessibleResources,
+  pickCloudId,
+  type JiraIssueContext,
+} from './jiraHelpers';
+import { newOAuthState, waitForOAuthCallback } from './oauthCallback';
+import {
+  clearOAuthCredentials,
+  DEFAULT_OAUTH_PORT,
+  hasOAuthTokens,
+  JiraOAuthProvider,
+} from './oauthProvider';
+import { logPrHelper } from '../util/prHelperLog';
+
+export type { JiraIssueContext };
 
 const ACCESS_TOKEN_KEY = 'prHelper.jira.accessToken';
 const REFRESH_TOKEN_KEY = 'prHelper.jira.refreshToken';
 
-export interface JiraIssueContext {
-  key: string;
-  summary?: string;
-  description?: string;
-  status?: string;
-  rawText: string;
-}
+const ISSUE_FIELDS = ['summary', 'description', 'status', 'issuetype', 'priority', 'labels', 'comment'];
+
+type McpTransport = StreamableHTTPClientTransport | SSEClientTransport;
 
 export class JiraMcpClient {
   private client: Client | undefined;
+  private cachedCloudId: string | undefined;
 
   constructor(private readonly secrets: vscode.SecretStorage) {}
 
   async isConnected(): Promise<boolean> {
-    const token = await this.secrets.get(ACCESS_TOKEN_KEY);
-    return Boolean(token);
+    if (await hasOAuthTokens(this.secrets)) {
+      return true;
+    }
+    return Boolean(await this.secrets.get(ACCESS_TOKEN_KEY));
   }
 
   async disconnect(): Promise<void> {
     await this.secrets.delete(ACCESS_TOKEN_KEY);
     await this.secrets.delete(REFRESH_TOKEN_KEY);
-    this.client = undefined;
+    await clearOAuthCredentials(this.secrets);
+    this.resetConnection();
   }
 
   /**
-   * Stores a bearer token for the Atlassian MCP server (from OAuth or admin-provided token).
-   * Full OAuth browser flow depends on Atlassian app registration; this validates connectivity.
+   * Browser (SSO) sign-in using OAuth 2.1 + PKCE with dynamic client registration, as defined by
+   * the MCP authorization spec. Opens the Atlassian login page and receives the code on a loopback port.
+   */
+  async signIn(): Promise<void> {
+    const port = this.getOAuthPort();
+    const state = newOAuthState();
+    const provider = new JiraOAuthProvider(this.secrets, port, async (url) => {
+      logPrHelper('Opening browser for Jira sign-in…');
+      await vscode.env.openExternal(vscode.Uri.parse(url.toString()));
+    });
+    provider.setState(state);
+
+    const abort = new AbortController();
+    const callback = waitForOAuthCallback({ port, expectedState: state, signal: abort.signal });
+    await callback.ready;
+
+    try {
+      const transport = this.buildTransport({ authProvider: provider });
+      const probe = new Client({ name: 'cursor-pr-helper', version: '0.1.0' }, { capabilities: {} });
+      try {
+        await probe.connect(transport);
+        // Existing tokens were still valid; no browser round trip needed.
+        abort.abort();
+        await probe.close();
+      } catch (err) {
+        if (!(err instanceof UnauthorizedError)) {
+          throw err;
+        }
+        const { code } = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: 'PR Helper: complete Jira sign-in in your browser…',
+            cancellable: true,
+          },
+          async (_progress, token) => {
+            token.onCancellationRequested(() => abort.abort());
+            return callback.result;
+          }
+        );
+        await transport.finishAuth(code);
+      }
+    } finally {
+      abort.abort();
+    }
+
+    await this.secrets.delete(ACCESS_TOKEN_KEY);
+    this.resetConnection();
+    await this.verifyConnection();
+    vscode.window.showInformationMessage('PR Helper: signed in to Jira.');
+  }
+
+  /**
+   * Stores a bearer token for the Atlassian MCP server (admin-provided or from another OAuth flow).
    */
   async connectWithAccessToken(token: string): Promise<void> {
+    await clearOAuthCredentials(this.secrets);
     await this.secrets.store(ACCESS_TOKEN_KEY, token.trim());
-    this.client = undefined;
-    await this.ensureClient();
+    this.resetConnection();
+    await this.verifyConnection();
     vscode.window.showInformationMessage('PR Helper: connected to Jira MCP.');
   }
 
   async connectInteractive(context: vscode.ExtensionContext): Promise<void> {
-    const token = await vscode.window.showInputBox({
-      title: 'Jira MCP access token',
-      password: true,
-      placeHolder: 'Paste OAuth access token from Atlassian MCP authorization',
-      ignoreFocusOut: true,
-      validateInput: (v) => (v.trim() ? undefined : 'Token is required'),
-    });
-    if (!token) {
+    void context;
+    const pick = await vscode.window.showQuickPick(
+      [
+        { label: '$(globe) Sign in with browser (SSO)', description: 'Recommended', mode: 'sso' as const },
+        { label: '$(key) Paste access token', mode: 'token' as const },
+      ],
+      { title: 'Connect Jira', ignoreFocusOut: true }
+    );
+    if (!pick) {
       return;
     }
     try {
+      if (pick.mode === 'sso') {
+        await this.signIn();
+        return;
+      }
+      const token = await vscode.window.showInputBox({
+        title: 'Jira MCP access token',
+        password: true,
+        placeHolder: 'Paste OAuth access token from Atlassian MCP authorization',
+        ignoreFocusOut: true,
+        validateInput: (v) => (v.trim() ? undefined : 'Token is required'),
+      });
+      if (!token) {
+        return;
+      }
       await this.connectWithAccessToken(token);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      vscode.window.showErrorMessage(`Jira MCP connection failed: ${msg}`);
+      vscode.window.showErrorMessage(`Jira connection failed: ${msg}`);
+      logPrHelper(`Jira connect failed: ${msg}`);
     }
-    void context;
   }
 
-  private async getAccessToken(): Promise<string | undefined> {
-    return this.secrets.get(ACCESS_TOKEN_KEY);
+  private resetConnection(): void {
+    void this.client?.close();
+    this.client = undefined;
+    this.cachedCloudId = undefined;
+  }
+
+  private getMcpUrl(): string {
+    const config = vscode.workspace.getConfiguration('prHelper');
+    return config.get<string>('jiraMcpUrl') ?? 'https://mcp.atlassian.com/v2/mcp';
+  }
+
+  private getOAuthPort(): number {
+    const config = vscode.workspace.getConfiguration('prHelper');
+    return config.get<number>('jiraOAuthPort') ?? DEFAULT_OAUTH_PORT;
+  }
+
+  private getJiraSiteUrlSetting(): string {
+    const config = vscode.workspace.getConfiguration('prHelper');
+    return config.get<string>('jiraSiteUrl') ?? '';
+  }
+
+  private buildTransport(auth: { authProvider?: JiraOAuthProvider; bearer?: string }): McpTransport {
+    const url = new URL(this.getMcpUrl());
+    const headers: Record<string, string> = auth.bearer ? { Authorization: `Bearer ${auth.bearer}` } : {};
+    if (url.pathname.replace(/\/$/, '').endsWith('/sse')) {
+      return new SSEClientTransport(url, {
+        authProvider: auth.authProvider,
+        requestInit: { headers },
+        eventSourceInit: {
+          fetch: async (input, init) => {
+            const h = new Headers(init?.headers);
+            for (const [k, v] of Object.entries(headers)) {
+              h.set(k, v);
+            }
+            const token = await auth.authProvider?.tokens();
+            if (token) {
+              h.set('Authorization', `Bearer ${token.access_token}`);
+            }
+            return fetch(input, { ...init, headers: h });
+          },
+        },
+      });
+    }
+    return new StreamableHTTPClientTransport(url, {
+      authProvider: auth.authProvider,
+      requestInit: { headers },
+    });
+  }
+
+  private async createTransport(): Promise<McpTransport> {
+    if (await hasOAuthTokens(this.secrets)) {
+      // Silent use: refresh is automatic; if it fails we must not hang waiting for a browser.
+      const provider = new JiraOAuthProvider(this.secrets, this.getOAuthPort(), () => {
+        throw new Error('Jira session expired. Run "PR Helper: Connect Jira" to sign in again.');
+      });
+      provider.setState(newOAuthState());
+      return this.buildTransport({ authProvider: provider });
+    }
+    const token = await this.secrets.get(ACCESS_TOKEN_KEY);
+    if (!token) {
+      throw new Error('Not connected to Jira. Run "PR Helper: Connect Jira".');
+    }
+    return this.buildTransport({ bearer: token });
   }
 
   private async ensureClient(): Promise<Client> {
     if (this.client) {
       return this.client;
     }
-    const token = await this.getAccessToken();
-    if (!token) {
-      throw new Error('Not connected to Jira. Run "PR Helper: Connect Jira".');
-    }
-    const config = vscode.workspace.getConfiguration('prHelper');
-    const url = config.get<string>('jiraMcpUrl') ?? 'https://mcp.atlassian.com/v1/sse';
-
-    const transport = new StreamableHTTPClientTransport(new URL(url), {
-      requestInit: {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      },
-    });
-
+    const transport = await this.createTransport();
     const client = new Client({ name: 'cursor-pr-helper', version: '0.1.0' }, { capabilities: {} });
     await client.connect(transport);
     this.client = client;
     return client;
   }
 
-  async getIssue(issueKey: string): Promise<JiraIssueContext | undefined> {
+  private async callJiraTool(name: string, arguments_: Record<string, unknown>): Promise<string> {
     try {
       const client = await this.ensureClient();
-      const result = await client.callTool({
-        name: 'getJiraIssue',
-        arguments: { issueIdOrKey: issueKey },
-      });
-      const rawText = formatToolResult(result);
-      return {
-        key: issueKey,
-        rawText,
-        summary: extractField(rawText, 'summary'),
-        description: extractField(rawText, 'description'),
-        status: extractField(rawText, 'status'),
-      };
+      const result = await client.callTool({ name, arguments: arguments_ });
+      return assertMcpToolSuccess(result);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (err instanceof UnauthorizedError || isLikelyAuthError(msg)) {
+        this.resetConnection();
+      }
+      throw err;
+    }
+  }
+
+  private async resolveCloudId(): Promise<string> {
+    if (this.cachedCloudId) {
+      return this.cachedCloudId;
+    }
+    const raw = await this.callJiraTool('getAccessibleAtlassianResources', {});
+    const resources = parseAccessibleResources(raw);
+    const siteSetting = this.getJiraSiteUrlSetting();
+    if (resources.length === 0) {
+      logPrHelper(`No Atlassian sites parsed from response (${describeResourcesResponse(raw)}).`);
+    }
+    const cloudId = pickCloudId(resources, siteSetting);
+    this.cachedCloudId = cloudId;
+    logPrHelper(`Jira cloudId: ${cloudId}${siteSetting ? ` (matched ${siteSetting})` : ''}`);
+    return cloudId;
+  }
+
+  private async verifyConnection(): Promise<void> {
+    await this.resolveCloudId();
+    logPrHelper('Jira MCP connection verified.');
+  }
+
+  async getIssue(issueKey: string): Promise<JiraIssueContext | undefined> {
+    try {
+      const cloudId = await this.resolveCloudId();
+      logPrHelper(`Fetching Jira issue ${issueKey}…`);
+      const rawText = await this.callJiraTool('getJiraIssue', {
+        cloudId,
+        issueIdOrKey: issueKey,
+        responseContentFormat: 'markdown',
+        fields: ISSUE_FIELDS,
+      });
+      const ctx = buildIssueContext(issueKey, rawText);
+      if (issueContextLooksEmpty(ctx)) {
+        throw new Error('Jira returned no usable issue fields.');
+      }
+      logPrHelper(`Jira ${issueKey} loaded (${ctx.summary ?? 'no summary'}).`);
+      vscode.window.setStatusBarMessage(`PR Helper: Jira ${issueKey} loaded`, 4000);
+      return ctx;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logPrHelper(`Jira fetch failed for ${issueKey}: ${msg}`);
       vscode.window.showWarningMessage(`Jira context unavailable for ${issueKey}: ${msg}`);
       return undefined;
     }
   }
-}
-
-function formatToolResult(result: unknown): string {
-  if (!result || typeof result !== 'object') {
-    return String(result ?? '');
-  }
-  const content = (result as { content?: { type: string; text?: string }[] }).content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((c) => c.type === 'text' && c.text)
-      .map((c) => c.text)
-      .join('\n');
-  }
-  return JSON.stringify(result, null, 2);
-}
-
-function extractField(raw: string, field: string): string | undefined {
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const fields = parsed.fields as Record<string, unknown> | undefined;
-    if (fields && fields[field] != null) {
-      return String(fields[field]);
-    }
-    if (parsed[field] != null) {
-      return String(parsed[field]);
-    }
-  } catch {
-    const re = new RegExp(`"${field}"\\s*:\\s*"([^"]+)"`, 'i');
-    const m = re.exec(raw);
-    if (m) {
-      return m[1];
-    }
-  }
-  return undefined;
 }

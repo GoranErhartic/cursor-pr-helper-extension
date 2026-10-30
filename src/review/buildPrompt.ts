@@ -286,15 +286,25 @@ function formatJira(jira?: JiraIssueContext): string {
   if (!jira) {
     return `## Jira\nNo linked issue context available.\n`;
   }
-  return [
+  const lines = [
     `## Jira ${jira.key}`,
     jira.summary ? `Summary: ${jira.summary}` : '',
     jira.status ? `Status: ${jira.status}` : '',
-    jira.description ? `Description: ${jira.description.slice(0, 4000)}` : '',
-    jira.rawText.length > 500 ? `\nRaw (truncated):\n${jira.rawText.slice(0, 4000)}` : '',
-  ]
-    .filter(Boolean)
-    .join('\n');
+    jira.issueType ? `Type: ${jira.issueType}` : '',
+    jira.priority ? `Priority: ${jira.priority}` : '',
+    jira.labels?.length ? `Labels: ${jira.labels.join(', ')}` : '',
+    jira.description ? `Description:\n${jira.description.slice(0, 4000)}` : '',
+  ];
+  if (jira.comments?.length) {
+    lines.push('Comments:');
+    for (const c of jira.comments) {
+      lines.push(`- @${c.author}: ${c.body.replace(/\n/g, ' ').slice(0, 1500)}`);
+    }
+  }
+  if (!jira.hasStructuredFields && jira.rawText.trim()) {
+    lines.push(`\nRaw (truncated):\n${jira.rawText.slice(0, 4000)}`);
+  }
+  return lines.filter(Boolean).join('\n') + '\n';
 }
 
 function truncateDiff(diff: string): string {

@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import { KeyStore } from './auth/keyStore';
 import { GitHubClient } from './github/GitHubClient';
-import { JiraMcpClient } from './jira/JiraMcpClient';
 import { PrTreeProvider } from './views/PrTreeProvider';
 import { PrDetailPanel } from './views/PrDetailPanel';
 import {
@@ -14,12 +13,14 @@ import {
 } from './commands/providerCommands';
 import { runPrReview } from './commands/runPrCommand';
 import { getWorkspaceRepo } from './util/vscodeHelpers';
+import { logPrHelper } from './util/prHelperLog';
+import type { JiraClient } from './jira/types';
 
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const github = new GitHubClient();
-  const jira = new JiraMcpClient(context.secrets);
+  const jira = await createJiraClient(context);
   const setupCtx: SetupContext = { keyStore: new KeyStore(context.secrets) };
 
   const getRepo = () => getWorkspaceRepo();
@@ -115,5 +116,32 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   if (refreshTimer) {
     clearInterval(refreshTimer);
+  }
+}
+
+async function createJiraClient(context: vscode.ExtensionContext): Promise<JiraClient> {
+  try {
+    const jiraModule = await import('./jira/JiraMcpClient.js');
+    return new jiraModule.JiraMcpClient(context.secrets);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logPrHelper(`Jira module failed to initialize: ${msg}`);
+    void vscode.window.showWarningMessage(
+      'PR Helper: Jira integration is temporarily unavailable. PR list will still work.'
+    );
+    return {
+      async isConnected() {
+        return false;
+      },
+      async getIssue() {
+        return undefined;
+      },
+      async signIn() {
+        throw new Error('Jira integration is unavailable in this session.');
+      },
+      async connectInteractive() {
+        throw new Error('Jira integration is unavailable in this session.');
+      },
+    };
   }
 }

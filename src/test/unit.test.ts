@@ -54,6 +54,25 @@ describe('buildReviewPrompt', () => {
     assert.ok(userPrompt.includes('+line'));
   });
 
+  it('includes structured Jira comments without raw dump', () => {
+    const { userPrompt } = buildReviewPrompt({
+      pr,
+      diff: '+line',
+      repoFullName: 'o/r',
+      jira: {
+        key: 'ART-1',
+        summary: 'Do thing',
+        status: 'Open',
+        comments: [{ author: 'Bob', body: 'Criteria: must pass tests' }],
+        rawText: '{"key":"ART-1"}',
+        hasStructuredFields: true,
+      },
+    });
+    assert.ok(userPrompt.includes('## Jira ART-1'));
+    assert.ok(userPrompt.includes('Criteria: must pass tests'));
+    assert.ok(!userPrompt.includes('Raw (truncated)'));
+  });
+
   it('system prompt covers the stack checklists and output contract', () => {
     const { systemPrompt } = buildReviewPrompt({ pr, diff: '+line', repoFullName: 'o/r' });
     for (const section of [

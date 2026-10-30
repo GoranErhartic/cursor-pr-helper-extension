@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import type { GitHubClient, RepoRef } from '../github/GitHubClient';
-import type { JiraMcpClient } from '../jira/JiraMcpClient';
+import type { JiraClient } from '../jira/types';
 import { buildReviewPrompt } from '../review/buildPrompt';
 import { ReviewPanel } from '../review/ReviewPanel';
 import { getProvider } from '../llm/registry';
@@ -12,7 +12,7 @@ export async function runPrReview(
   context: vscode.ExtensionContext,
   setup: SetupContext,
   github: GitHubClient,
-  jira: JiraMcpClient,
+  jira: JiraClient,
   ref: RepoRef,
   prNumber: number
 ): Promise<void> {
@@ -21,6 +21,7 @@ export async function runPrReview(
     return;
   }
   const provider = getProvider(creds.providerId);
+  await promptForJiraAuthorization(jira);
 
   const controller = new AbortController();
   const cancel = vscode.window.withProgress(
@@ -39,8 +40,6 @@ export async function runPrReview(
       let jiraContext;
       if (jiraKey && (await jira.isConnected())) {
         jiraContext = await jira.getIssue(jiraKey);
-      } else if (jiraKey && !(await jira.isConnected())) {
-        vscode.window.showWarningMessage(`Jira key ${jiraKey} detected but Jira is not connected.`);
       }
       const prompt = buildReviewPrompt({
         pr: detail,
@@ -75,5 +74,25 @@ export async function runPrReview(
     }
     const msg = err instanceof Error ? err.message : String(err);
     vscode.window.showErrorMessage(`Run PR failed: ${msg}`);
+  }
+}
+
+async function promptForJiraAuthorization(jira: JiraClient): Promise<void> {
+  if (await jira.isConnected()) {
+    return;
+  }
+  const choice = await vscode.window.showInformationMessage(
+    'Jira MCP is not connected. Authorize Jira for better review results?',
+    'Authorize Jira',
+    'Continue without Jira'
+  );
+  if (choice !== 'Authorize Jira') {
+    return;
+  }
+  try {
+    await jira.signIn();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    vscode.window.showErrorMessage(`Jira sign-in failed: ${msg}`);
   }
 }

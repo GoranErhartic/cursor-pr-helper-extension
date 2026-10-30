@@ -110,8 +110,20 @@
         },
         "prHelper.jiraMcpUrl": {
           "type": "string",
-          "default": "https://mcp.atlassian.com/v1/sse",
-          "description": "Atlassian remote MCP endpoint URL."
+          "default": "https://mcp.atlassian.com/v2/mcp",
+          "description": "Atlassian remote MCP endpoint URL (default /v2/mcp; legacy /v1/sse also supported)."
+        },
+        "prHelper.jiraOAuthPort": {
+          "type": "number",
+          "default": 33418,
+          "minimum": 1024,
+          "maximum": 65535,
+          "description": "Local loopback port used to receive the Jira browser sign-in callback (http://127.0.0.1:<port>/callback)."
+        },
+        "prHelper.jiraSiteUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Jira site URL or cloud ID when your token has access to multiple sites (e.g. https://your-org.atlassian.net)."
         },
         "prHelper.jiraProjectKeys": {
           "type": "string",
