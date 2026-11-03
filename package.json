@@ -2,7 +2,7 @@
   "name": "prhelper",
   "displayName": "LazyDev PR Helper",
   "description": "List open PRs, view CI and comments, and run AI reviews with Jira context.",
-  "version": "0.1.1",
+  "version": "0.2.4",
   "publisher": "LazyDevAI",
   "license": "MIT",
   "repository": {

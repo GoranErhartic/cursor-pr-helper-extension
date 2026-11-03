@@ -14,11 +14,13 @@ import {
 import { runPrReview } from './commands/runPrCommand';
 import { getWorkspaceRepo } from './util/vscodeHelpers';
 import { logPrHelper } from './util/prHelperLog';
+import { setCursorLogSink } from './llm/cursor';
 import type { JiraClient } from './jira/types';
 
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  setCursorLogSink(logPrHelper);
   const github = new GitHubClient();
   const jira = await createJiraClient(context);
   const setupCtx: SetupContext = { keyStore: new KeyStore(context.secrets) };

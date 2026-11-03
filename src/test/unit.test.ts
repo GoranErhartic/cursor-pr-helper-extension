@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { extractJiraKeys, pickPrimaryJiraKey, parseProjectKeys, pickPrimaryJiraKeyFromTexts } from '../util/jiraKey';
-import { buildReviewPrompt } from '../review/buildPrompt';
+import { buildReviewPrompt, truncateDiff, MAX_DIFF_CHARS } from '../review/buildPrompt';
 import type { PullRequestDetail } from '../github/GitHubClient';
 
 describe('jiraKey', () => {
@@ -96,5 +96,29 @@ describe('buildReviewPrompt', () => {
     ]) {
       assert.ok(systemPrompt.includes(section), `missing: ${section}`);
     }
+  });
+});
+
+describe('truncateDiff', () => {
+  const fileDiff = (name: string, size: number): string =>
+    `diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n${'+x\n'.repeat(Math.floor(size / 3))}`;
+
+  it('returns a diff within budget unchanged', () => {
+    const small = fileDiff('a.ts', 50_000);
+    assert.strictEqual(truncateDiff(small), small);
+  });
+
+  it('keeps several mid-size files whole before the budget is hit', () => {
+    const diff = [fileDiff('a.ts', 30_000), fileDiff('b.ts', 30_000), fileDiff('c.ts', 30_000)].join('');
+    assert.strictEqual(truncateDiff(diff), diff);
+  });
+
+  it('names files that do not fit instead of silently dropping them', () => {
+    const files = Array.from({ length: 12 }, (_, i) => fileDiff(`f${i}.ts`, 39_000));
+    const out = truncateDiff(files.join(''));
+    assert.ok(out.length <= MAX_DIFF_CHARS + 2_000);
+    assert.match(out, /diff truncated/);
+    assert.match(out, /Not shown \(over size budget\):.*f11\.ts/);
+    assert.ok(out.includes('diff --git a/f0.ts'));
   });
 });

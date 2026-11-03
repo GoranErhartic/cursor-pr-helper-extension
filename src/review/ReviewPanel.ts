@@ -11,6 +11,7 @@ export class ReviewPanel {
   private readonly statuses: string[] = [];
   private latestStatus = 'Preparing review…';
   private isComplete = false;
+  private finalized = false;
   private lingoActive = false;
   private statusTone: 'running' | 'complete' | 'failed' | 'canceled' = 'running';
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
@@ -31,6 +32,7 @@ export class ReviewPanel {
       ReviewPanel.current.statuses.length = 0;
       ReviewPanel.current.latestStatus = 'Preparing review…';
       ReviewPanel.current.isComplete = false;
+      ReviewPanel.current.finalized = false;
       ReviewPanel.current.lingoActive = false;
       ReviewPanel.current.statusTone = 'running';
       ReviewPanel.current.panel.title = title;
@@ -48,28 +50,22 @@ export class ReviewPanel {
   }
 
   appendMarkdown(chunk: string): void {
+    if (this.finalized) {
+      return;
+    }
     this.accumulated += chunk;
     this.lingoActive = false;
     this.scheduleRender();
   }
 
+  /** Progress status while the review is running. Ignored once the review is finalized. */
   setStatus(status: string): void {
-    const normalized = status.trim();
-    // Tool-call noise (e.g. "Running tool: glob…") is not shown.
-    if (/^running tool/i.test(normalized)) {
+    if (this.finalized) {
       return;
     }
-    const nextTone = this.detectStatusTone(normalized);
-    if (nextTone) {
-      this.statusTone = nextTone;
-      if (nextTone !== 'running') {
-        this.lingoActive = false;
-      }
-    }
-    if (!normalized || normalized === this.latestStatus) {
-      if (nextTone === 'failed' || nextTone === 'canceled') {
-        this.renderNow();
-      }
+    const normalized = status.trim();
+    // Tool-call noise (e.g. "Running tool: glob…") is not shown.
+    if (!normalized || /^running tool/i.test(normalized) || normalized === this.latestStatus) {
       return;
     }
     this.latestStatus = normalized;
@@ -79,7 +75,7 @@ export class ReviewPanel {
       if (!/^thinking/i.test(normalized)) {
         this.statuses.push(normalized);
       }
-      this.lingoActive = this.statusTone === 'running';
+      this.lingoActive = true;
     } else {
       this.lingoActive = false;
       this.statuses.push(normalized);
@@ -88,10 +84,28 @@ export class ReviewPanel {
   }
 
   setComplete(): void {
-    this.isComplete = true;
+    this.finalize('complete', 'Review complete.');
+  }
+
+  setFailed(message: string): void {
+    this.finalize('failed', message);
+  }
+
+  setCanceled(): void {
+    this.finalize('canceled', 'Review canceled.');
+  }
+
+  /** Terminal state: latches so late events can never restore the running/pulsing state. */
+  private finalize(tone: 'complete' | 'failed' | 'canceled', message: string): void {
+    if (this.finalized) {
+      return;
+    }
+    this.finalized = true;
+    this.isComplete = tone === 'complete';
+    this.statusTone = tone;
     this.lingoActive = false;
-    this.statusTone = 'complete';
-    this.setStatus('Review complete.');
+    this.latestStatus = message;
+    this.statuses.push(message);
     this.renderNow();
   }
 
@@ -309,23 +323,6 @@ export class ReviewPanel {
   </script>
 </body>
 </html>`;
-  }
-
-  private detectStatusTone(status: string): 'running' | 'complete' | 'failed' | 'canceled' | undefined {
-    const lower = status.toLowerCase();
-    if (lower.startsWith('review complete')) {
-      return 'complete';
-    }
-    if (lower.includes('failed')) {
-      return 'failed';
-    }
-    if (lower.includes('canceled') || lower.includes('cancelled')) {
-      return 'canceled';
-    }
-    if (this.statusTone !== 'complete' && this.statusTone !== 'failed' && this.statusTone !== 'canceled') {
-      return 'running';
-    }
-    return undefined;
   }
 
   private getStatusCardClass(): string {
